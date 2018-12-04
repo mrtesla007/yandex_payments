@@ -1,11 +1,14 @@
 import time
-from yandex_checkout import Payment, Configuration
 import uuid
+
+from yandex_checkout import Payment, Configuration
+
 from sqlalchemy import Column, Integer, String, Float
 from sqlalchemy import create_engine, update
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import text
+
 import config
 
 Base = declarative_base()
@@ -23,10 +26,10 @@ def check_payments(db, kassa):
             db.flush()
 
     for payment in db.get_payments(status='waiting_for_capture'):
-        transaction_id = payment.transaction_id
-        status = kassa.get_status(transaction_id)
+        payment_id = payment.payment_id
+        status = kassa.get_status(payment_id)
         if status == "waiting_for_capture":
-            kassa.confirm(transaction_id)
+            kassa.confirm(payment_id)
 
         if (status != payment.status):
             payment.status = status
@@ -35,7 +38,7 @@ def check_payments(db, kassa):
 
 def add_payment(db, kassa, user_id, pay_amount, return_url, description):
     payment = kassa.send_payment(pay_amount, return_url, description)
-    tr = Transaction(
+    tr = MyPayment(
         user_id,
         pay_amount,
         return_url,
@@ -47,7 +50,7 @@ def add_payment(db, kassa, user_id, pay_amount, return_url, description):
     return payment.confirmation.confirmation_url
 
 
-class DB(object):
+class DB:
     def __init__(self, filename):
         self.engine = create_engine(
             'sqlite:///{}'.format(filename),
@@ -62,31 +65,36 @@ class DB(object):
         self.session.add(obj)
 
     def delete(self, id_num):
-        elem = self.session.query(Transaction).get(id_num)
+        elem = self.session.query(MyPayment).get(id_num)
         self.session.delete(elem)
 
-    def change_status(self, transaction, new_status):
-        if transaction.status != new_status:
-            transaction.status = new_status
+    def change_status(self, payment, new_status):
+        if payment.status != new_status:
+            payment.status = new_status
             self.flush()
 
     def flush(self):
         self.session.commit()
         self.session.flush()
 
-    def get_all_transactions(self):
-        return self.session.query(Transaction).all()
+    def get_all_payments(self):
+        return self.session.query(MyPayment).all()
+
+    def print_all_payments(self):
+        for payment in self.get_all_payments():
+            print(payment)
 
     def get_payments(self, status):
-        query = self.session.query(Transaction)
-        query = query.filter(Transaction.status == status)
+        query = self.session.query(MyPayment)
+        query = query.filter(MyPayment.status == status)
         return query.all()
 
 
-class Transaction(Base):
-    __tablename__ = "transactions"
+
+class MyPayment(Base):
+    __tablename__ = "payments"
     id = Column(Integer, primary_key=True)
-    transaction_id = Column(String)
+    payment_id = Column(String)
     user_id = Column(String)
     pay_amount = Column(Float)
     status = Column(String)
@@ -103,12 +111,12 @@ class Transaction(Base):
         self.user_id = user_id
         self.pay_amount = pay_amount
         self.time = time.time()
-        self.transaction_id = str(payment_id)
+        self.payment_id = str(payment_id)
         self.status = str(payment_status)
 
     def __repr__(self):
-        return "<Transcation({}, {}, {}, {}, {})>".format(
-            self.transaction_id, self.user_id, self.pay_amount, self.status, self.time)
+        return "<MyPayment({}, {}, {}, {}, {})>".format(
+            self.payment_id, self.user_id, self.pay_amount, self.status, self.time)
 
 
 class Kassa(object):
@@ -134,8 +142,8 @@ class Kassa(object):
         return payment.status == "waiting_for_capture"
 
     # Not tested
-    def confirm(self, transaction_id):
-        payment = Payment.find_one(str(transaction_id))
+    def confirm(self, payment_id):
+        payment = Payment.find_one(str(payment_id))
         assert self.is_paid(payment)
         idempotence_key = str(uuid.uuid4())
         response = payment.capture(
@@ -153,8 +161,8 @@ class Kassa(object):
 
     # Not tested
 
-    def cancel(self, transaction_id):
-        payment = Payment.find_one(str(transaction_id))
+    def cancel(self, payment_id):
+        payment = Payment.find_one(str(payment_id))
         assert self.is_paid(payment)
         idempotence_key = str(uuid.uuid4())
         response = Payment.cancel(  # ПРоверять результат
@@ -164,24 +172,26 @@ class Kassa(object):
         return response.status == 'canceled'
 
     # Корректность статусов всех транзакицй
-    def get_status(self, transaction_id):
-        payment = Payment.find_one(str(transaction_id))
+    def get_status(self, payment_id):
+        payment = Payment.find_one(str(payment_id))
         return payment.status
 
 
+
+
 if __name__ == "__main__":
-    db = DB("./database/test.sqlite")
-    kassa = Kassa(config.SHOP_ID, config.SECRET_KEY)
-    url = add_payment(db, kassa, "Alex", 1, "google.com", "description")
-    print (url)
+    database = DB("./database/test.sqlite")
+    ya_kassa = Kassa(config.SHOP_ID, config.SECRET_KEY)
+    url = add_payment(database, ya_kassa, "Alex", 1, "google.com", "description")
+    print(url)
     # add_payment(db,"Sasha",1,"google.com", "description")
     # add_payment(db,"Masha",1,"google.com", "description")
     # add_payment(db,"Kolya",1,"google.com", "description")
     # add_payment(db,"Nikita",1,"google.com", "description")
-    for tr in db.get_all_transactions():
+    for tr in database.get_all_payments():
         print(tr)
 
-    check_payments(db, kassa)
+    check_payments(database, ya_kassa)
 
-    for tr in db.get_all_transactions():
+    for tr in database.get_all_payments():
         print(tr)
