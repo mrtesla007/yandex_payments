@@ -13,7 +13,7 @@ Base = declarative_base()
 # STATUS: pending, waiting_for_capture, succeeded, canceled, timeout
 
 # Not tested
-def check_payments(db, Kassa):
+def check_payments(db, kassa):
     for payment in db.get_payments(status='pending'):
         sec_ago = time.time() - payment.time
         if sec_ago > config.TIME_LIMIT:
@@ -22,16 +22,16 @@ def check_payments(db, Kassa):
 
     for payment in db.get_payments(status='waiting_for_capture'):
         transaction_id = payment.transaction_id
-        status = Kassa.get_status(transaction_id) 
+        status = kassa.get_status(transaction_id) 
         if status == "waiting_for_capture":
-            Kassa.confirm(transaction_id)
+            kassa.confirm(transaction_id)
 
         if (status != payment.status):
             payment.status = status
             db.flush()
     
-def add_payment(db, user_id, pay_amount, return_url, description):
-    payment = Kassa.send_payment(pay_amount, return_url, description)
+def add_payment(db, kassa, user_id, pay_amount, return_url, description):
+    payment = kassa.send_payment(pay_amount, return_url, description)
     tr = Transaction(user_id, pay_amount, return_url, description, payment.id, payment.status)
     db.add(tr)
     db.flush()
@@ -153,8 +153,8 @@ class Kassa(object):
 
 if __name__=="__main__":
     db = DB("./database/test.sqlite")
-    Kassa = Kassa(config.SHOP_ID, config.SECRET_KEY)
-    url = add_payment(db,"Alex",1,"google.com", "description")
+    kassa = Kassa(config.SHOP_ID, config.SECRET_KEY)
+    url = add_payment(db, kassa, "Alex",1,"google.com", "description")
     print (url)
     # add_payment(db,"Sasha",1,"google.com", "description")
     # add_payment(db,"Masha",1,"google.com", "description")
@@ -163,7 +163,7 @@ if __name__=="__main__":
     for tr in db.get_all_transactions():
         print(tr)
 
-    check_payments(db, Kassa)
+    check_payments(db, kassa)
 
     for tr in db.get_all_transactions():
         print(tr)
