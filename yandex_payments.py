@@ -1,40 +1,63 @@
-import os
+import datetime
+import time
 from yandex_checkout import Payment, Configuration
 import uuid
 from sqlalchemy import Column, Integer, String, Float
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, update
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.sql import text
 import config
 
 Base = declarative_base()
 
+# STATUS: pending, waiting_for_capture, succeeded, canceled
+
 def check_payments(db, Kassa):
-    for instanse in db.session.query(Transaction).order_by(Transaction.id):
-        if Kassa.status(instanse.transaction_id) == "waiting_for_capture":
-            Kassa.confirm(instanse.transaction_id)
-        if (Kassa.status(instanse.transaction_id) != instanse.status): 
-            instanse.status = Kassa.status(instanse.transaction_id)
+    for instance in db.session.query(Transaction).filter(Transaction.status == 'pending'):
+        time = instance.time
+        minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[0])
+        delta_time = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute - minutes
+        if delta_time < config.TIME_LIMIT:
+            db.delete(instance.id)
+#            Kassa.cancel(instance.transaction_id) 
+
+    for instanse in db.session.query(Transaction).filter(Transaction.status == 'waiting_for_capture'):
+        transaction_id = Kassa.get_status(instanse.transaction_id) 
+        status = Kassa.get_status(instanse.status) 
+        if status == "waiting_for_capture":
+            Kassa.confirm(transaction_id)
+        if (status != instanse.status):
+            db.change_status(instanse.id, status)
     
 def add_payment(db, user_id, pay_amount, return_url, description):
-    tr = Transaction(user_id, pay_amount, return_url, description)
+    payment = Kassa.send_payment(pay_amount, return_url, description)
+    tr = Transaction(user_id, pay_amount, return_url, description, payment.id, payment.status)
     db.add(tr)
-    return tr.transaction_id
+    return payment.confirmation.confirmation_url
     
 class DB(object):
     def __init__(self, filename):
         self.engine = create_engine(
             'sqlite:///{}'.format(filename),
-            echo=True)      
-
+            echo=False)
+    
         Session = sessionmaker()
         Session.configure(bind=self.engine)
         self.session = Session()
-        
+        self.conn = self.engine.connect()
         Base.metadata.create_all(self.engine)
         
     def add(self, obj):
         self.session.add(obj)
+        
+    def delete(self, id):
+        elem = self.session.query(Transaction).get(id) # FIXME:: doesn't work
+        self.session.delete(elem)
+    
+    def change_status(self, id, status):
+        elem = self.session.query(Transaction).get(id) # FIXME:: doesn't work
+        elem.status = status 
         
     def flush(self):
         self.session.commit()
@@ -50,26 +73,24 @@ class Transaction(Base):
     user_id = Column(String)
     pay_amount = Column(Float)
     status = Column(String)
+    time = Column(String) # Float?
     
-    def __init__(self, user_id, pay_amount, return_url, description):
+    def __init__(self, user_id, pay_amount, return_url, description, payment_id, payment_status):
         self.user_id = user_id
         self.pay_amount = pay_amount
-        # Create payment
-        payment = Kassa.send_payment(pay_amount, return_url, description)
-        self.transaction_id = str(payment.id)
-        self.status = str(payment.status)
+        self.time =  "{}:{}".format(datetime.datetime.now().hour,datetime.datetime.now().minute)
+        self.transaction_id = str(payment_id)
+        self.status = str(payment_status)
         
     def __repr__(self):
-        return "<Transcation('%s', '%s', '%s', '%s')>" % (self.transaction_id, self.user_id, self.pay_amount, self.status)
-
+        return "<Transcation({}, {}, {}, {}, {})>".format(self.transaction_id, self.user_id, self.pay_amount, self.status, self.time)
+    
 class Kassa(object):
     def __init__(self, SHOP_ID, SECRET_KEY):
         Configuration.configure(SHOP_ID,SECRET_KEY)
     
-    @staticmethod
-    def send_payment(pay_amount, return_url, description):
+    def send_payment(self, pay_amount, return_url, description):
         idempotence_key = str(uuid.uuid4())
-        # Create payment
         try:
             payment = Payment.create({
             "amount": {
@@ -88,63 +109,47 @@ class Kassa(object):
             return None
     
     def is_paid(self, transaction_id):
-        try:
             payment = Payment.find_one(str(transaction_id))
             if (payment.status == "waiting_for_capture"):
                 return True
             return False
-        except Exception as exc:
-            print("Unexpected error:", exc)        
-            return False
-        
+    # FIXME::CHECK PAYMENT RETURN
     def confirm(self, transaction_id):
-        try:
-            payment = Payment.find_one(str(transaction_id))
-            if is_paid(transaction_id):
-                idempotence_key = str(uuid.uuid4())
-                payment.capture(  
-                    payment.id,
-                  {
-                    "amount": {
-                      "value": self.pay_amount,
-                      "currency": "RUB"
-                    }
-                  },
-                  idempotence_key
-                )
-                return True
-            return False
-        except Exception as exc:
-            print("Unexpected error:", exc)        
-            return False
-    
+        payment = Payment.find_one(str(transaction_id))
+        assert self.is_paid(transaction_id)
+        idempotence_key = str(uuid.uuid4())
+        payment.capture( 
+            payment.id,
+          {
+            "amount": {
+              "value": self.pay_amount,
+              "currency": "RUB"
+            }
+          },
+          idempotence_key
+        )
+        return True
+    # FIXME::CHECK PAYMENT RETURN
     def cancel(self, transaction_id):
-        try:
-            payment = Payment.find_one(str(transaction_id))
-            if is_paid(transaction_id):
-                idempotence_key = str(uuid.uuid4())
-                response = Payment.cancel(
-                  payment.id,
-                  idempotence_key
-                )
-                return True
-            return False
-        except Exception as exc:
-            print("Unexpected error:", exc)        
-            return False
+        payment = Payment.find_one(str(transaction_id))
+        assert self.is_paid(transaction_id)
+        idempotence_key = str(uuid.uuid4())
+        response = Payment.cancel( #ПРоверять результат 
+          payment.id,
+          idempotence_key
+        )
+        return True
     
-    def status(self, transaction_id):
-        try:
-            payment = Payment.find_one(str(transaction_id))
-            return payment.status
-        except Exception as exc:
-            print("Unexpected error:", exc) 
-            return None
+    # FIXME::CHECK PAYMENT RETURN
+    # Корректность статусов всех транзакицй
+    def get_status(self, transaction_id):
+        payment = Payment.find_one(str(transaction_id))
+        return payment.status
         
 if __name__=="__main__":
     db = DB("./database/test.sqlite")
     Kassa = Kassa(config.SHOP_ID, config.SECRET_KEY)
-    add_payment(db,"Alex",100.0,"google.com", "description")
-    #db.get_all_transactions()
+    url = add_payment(db,"Alex",1,"google.com", "description")
     check_payments(db, Kassa)
-
+    # CHECK CHANGE_STATUS
+    db.change_status(0, 'cancel')
