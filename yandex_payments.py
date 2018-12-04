@@ -13,12 +13,14 @@ Base = declarative_base()
 
 # STATUS: pending, waiting_for_capture, succeeded, canceled
 
+# Not tested
 def check_payments(db, Kassa):
     for instance in db.session.query(Transaction).filter(Transaction.status == 'pending'):
         time = instance.time
         minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[0])
         delta_time = datetime.datetime.now().hour * 60 + datetime.datetime.now().minute - minutes
-        if delta_time < config.TIME_LIMIT:
+        if delta_time > config.TIME_LIMIT:
+            print('--------------------------------------------------------------------------')
             db.delete(instance.id)
 #            Kassa.cancel(instance.transaction_id) 
 
@@ -40,10 +42,9 @@ class DB(object):
     def __init__(self, filename):
         self.engine = create_engine(
             'sqlite:///{}'.format(filename),
-            echo=False)
+            echo=True)
     
-        Session = sessionmaker()
-        Session.configure(bind=self.engine)
+        Session = sessionmaker(bind=self.engine)
         self.session = Session()
         self.conn = self.engine.connect()
         Base.metadata.create_all(self.engine)
@@ -51,12 +52,12 @@ class DB(object):
     def add(self, obj):
         self.session.add(obj)
         
-    def delete(self, id):
-        elem = self.session.query(Transaction).get(id) # FIXME:: doesn't work
+    def delete(self, id_num):
+        elem = self.session.query(Transaction).get(id_num)
         self.session.delete(elem)
     
-    def change_status(self, id, status):
-        elem = self.session.query(Transaction).get(id) # FIXME:: doesn't work
+    def change_status(self, id_num, status):
+        elem = self.session.query(Transaction).get(id_num)
         elem.status = status 
         
     def flush(self):
@@ -113,12 +114,12 @@ class Kassa(object):
             if (payment.status == "waiting_for_capture"):
                 return True
             return False
-    # FIXME::CHECK PAYMENT RETURN
+    # Not tested
     def confirm(self, transaction_id):
         payment = Payment.find_one(str(transaction_id))
         assert self.is_paid(transaction_id)
         idempotence_key = str(uuid.uuid4())
-        payment.capture( 
+        response = payment.capture( 
             payment.id,
           {
             "amount": {
@@ -128,8 +129,11 @@ class Kassa(object):
           },
           idempotence_key
         )
-        return True
-    # FIXME::CHECK PAYMENT RETURN
+        if response.status == 'succeeded':
+            return True
+        else:
+            return False
+    # Not tested
     def cancel(self, transaction_id):
         payment = Payment.find_one(str(transaction_id))
         assert self.is_paid(transaction_id)
@@ -138,9 +142,11 @@ class Kassa(object):
           payment.id,
           idempotence_key
         )
-        return True
+        if response.status == 'canceled':
+            return True
+        else:
+            return False
     
-    # FIXME::CHECK PAYMENT RETURN
     # Корректность статусов всех транзакицй
     def get_status(self, transaction_id):
         payment = Payment.find_one(str(transaction_id))
@@ -150,6 +156,11 @@ if __name__=="__main__":
     db = DB("./database/test.sqlite")
     Kassa = Kassa(config.SHOP_ID, config.SECRET_KEY)
     url = add_payment(db,"Alex",1,"google.com", "description")
+    print (url)
+    add_payment(db,"Sasha",1,"google.com", "description")
+    add_payment(db,"Masha",1,"google.com", "description")
+    add_payment(db,"Kolya",1,"google.com", "description")
+    add_payment(db,"Nikita",1,"google.com", "description")
+    print (db.get_all_transactions())
     check_payments(db, Kassa)
-    # CHECK CHANGE_STATUS
-    db.change_status(0, 'cancel')
+    print (db.get_all_transactions())
