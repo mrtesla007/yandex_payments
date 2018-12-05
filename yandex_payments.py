@@ -15,22 +15,28 @@ Base = declarative_base()
 
 # STATUS: pending, waiting_for_capture, succeeded, canceled, timeout
 
-# Not tested
-
-
 def check_payments(db, kassa):
     for payment in db.get_payments(status="pending"):
+        # If status was changed by ya_kasssa
+        payment_id = str(payment.payment_id)
+        status = kassa.get_status(payment_id)
+        if (status != payment.status):
+            payment.status = status
+            db.flush()
+        # If user doesn't pay in TIME_LIMIT
         sec_ago = time.time() - payment.time
         if sec_ago > config.TIME_LIMIT:
             payment.status = "timeout"
             db.flush()
 
+
     for payment in db.get_payments(status="waiting_for_capture"):
-        payment_id = payment.payment_id
+        payment_id = str(payment.payment_id)
         status = kassa.get_status(payment_id)
         if status == "waiting_for_capture":
             kassa.confirm(payment_id)
-
+            status = kassa.get_status(payment_id)
+            
         if (status != payment.status):
             payment.status = status
             db.flush()
@@ -43,12 +49,11 @@ def add_payment(db, kassa, user_id, pay_amount, return_url, description):
         pay_amount,
         return_url,
         description,
-        payment.id,
-        payment.status)
+        str(payment.id),
+        str(payment.status))
     db.add(tr)
     db.flush()
     return payment.confirmation.confirmation_url
-
 
 class DB:
     def __init__(self, filename):
@@ -64,9 +69,8 @@ class DB:
     def add(self, obj):
         self.session.add(obj)
 
-    def delete(self, id_num):
-        elem = self.session.query(MyPayment).get(id_num)
-        self.session.delete(elem)
+    def delete(self, obj):
+        self.session.delete(obj)
 
     def change_status(self, payment, new_status):
         if payment.status != new_status:
@@ -110,8 +114,8 @@ class MyPayment(Base):
         self.user_id = user_id
         self.pay_amount = pay_amount
         self.time = time.time()
-        self.payment_id = str(payment_id)
-        self.status = str(payment_status)
+        self.payment_id = payment_id
+        self.status = payment_status
 
     def __repr__(self):
         return "<MyPayment({}, {}, {}, {}, {})>".format(
@@ -140,16 +144,16 @@ class Kassa(object):
     def is_paid(self, payment):
         return payment.status == "waiting_for_capture"
 
-    # Not tested
     def confirm(self, payment_id):
-        payment = Payment.find_one(str(payment_id))
+        payment = Payment.find_one(payment_id)
         assert self.is_paid(payment)
         idempotence_key = str(uuid.uuid4())
+        pay_amount = payment.amount.value
         response = Payment.capture(
-            payment.id,
+            payment_id,
             {
                 "amount": {
-                    "value": self.pay_amount,
+                    "value": pay_amount,
                     "currency": "RUB"
                 }
             },
@@ -158,21 +162,18 @@ class Kassa(object):
 
         return response.status == "succeeded"
 
-    # Not tested
-
     def cancel(self, payment_id):
-        payment = Payment.find_one(str(payment_id))
+        payment = Payment.find_one(payment_id)
         assert self.is_paid(payment)
         idempotence_key = str(uuid.uuid4())
-        response = Payment.cancel(  # ПРоверять результат
-            payment.id,
+        response = Payment.cancel(
+            payment_id,
             idempotence_key
         )
         return response.status == "canceled"
 
-    # Корректность статусов всех транзакицй
     def get_status(self, payment_id):
-        payment = Payment.find_one(str(payment_id))
+        payment = Payment.find_one(payment_id)
         return payment.status
 
 
