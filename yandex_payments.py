@@ -16,6 +16,11 @@ Base = declarative_base()
 # STATUS: pending, waiting_for_capture, succeeded, canceled, timeout
 
 def check_payments(db, kassa):
+    pending_check(db,kassa)
+    waiting_capture_check(db,kassa)
+    
+
+def pending_check(db, kassa):
     for payment in db.get_payments(status="pending"):
         # If status was changed by ya_kasssa
         payment_id = str(payment.payment_id)
@@ -29,7 +34,7 @@ def check_payments(db, kassa):
             payment.status = "timeout"
             db.flush()
 
-
+def waiting_capture_check(db, kassa):
     for payment in db.get_payments(status="waiting_for_capture"):
         payment_id = str(payment.payment_id)
         status = kassa.get_status(payment_id)
@@ -40,8 +45,22 @@ def check_payments(db, kassa):
         if (status != payment.status):
             payment.status = status
             db.flush()
-
-
+            
+# If user all the same decided to pay after TIME_LIMIT. 
+# Need to check with lower rate, so wasn't included to check_payments(db, kassa)
+def timeout_check(db, kassa):
+    for payment in db.get_payments(status="timeout"):
+        payment_id = str(payment.payment_id)
+        status = kassa.get_status(payment_id)
+        if (status == 'canceled'):
+            payment.status = status
+            db.flush()
+        if (status == 'waiting_for_capture'):
+            kassa.confirm(payment_id)
+            status = kassa.get_status(payment_id)
+            payment.status = status
+            db.flush()
+            
 def add_payment(db, kassa, user_id, pay_amount, return_url, description):
     payment = kassa.send_payment(pay_amount, return_url, description)
     tr = MyPayment(
