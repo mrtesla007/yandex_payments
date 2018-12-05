@@ -19,13 +19,13 @@ Base = declarative_base()
 
 
 def check_payments(db, kassa):
-    for payment in db.get_payments(status='pending'):
+    for payment in db.get_payments(status="pending"):
         sec_ago = time.time() - payment.time
         if sec_ago > config.TIME_LIMIT:
             payment.status = "timeout"
             db.flush()
 
-    for payment in db.get_payments(status='waiting_for_capture'):
+    for payment in db.get_payments(status="waiting_for_capture"):
         payment_id = payment.payment_id
         status = kassa.get_status(payment_id)
         if status == "waiting_for_capture":
@@ -53,7 +53,7 @@ def add_payment(db, kassa, user_id, pay_amount, return_url, description):
 class DB:
     def __init__(self, filename):
         self.engine = create_engine(
-            'sqlite:///{}'.format(filename),
+            "sqlite:///{}".format(filename),
             echo=False)
 
         Session = sessionmaker(bind=self.engine)
@@ -157,7 +157,7 @@ class Kassa(object):
             idempotence_key
         )
 
-        return response.status == 'succeeded'
+        return response.status == "succeeded"
 
     # Not tested
 
@@ -169,7 +169,7 @@ class Kassa(object):
             payment.id,
             idempotence_key
         )
-        return response.status == 'canceled'
+        return response.status == "canceled"
 
     # Корректность статусов всех транзакицй
     def get_status(self, payment_id):
