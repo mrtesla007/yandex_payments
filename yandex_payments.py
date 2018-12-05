@@ -86,8 +86,7 @@ class DB:
 
     def get_payments(self, status):
         query = self.session.query(MyPayment)
-        query = query.filter(MyPayment.status == status)
-        return query.all()
+        return query.filter(MyPayment.status == status).all()
 
 
 
@@ -146,7 +145,7 @@ class Kassa(object):
         payment = Payment.find_one(str(payment_id))
         assert self.is_paid(payment)
         idempotence_key = str(uuid.uuid4())
-        response = payment.capture(
+        response = Payment.capture(
             payment.id,
             {
                 "amount": {
@@ -188,10 +187,8 @@ if __name__ == "__main__":
     # add_payment(db,"Masha",1,"google.com", "description")
     # add_payment(db,"Kolya",1,"google.com", "description")
     # add_payment(db,"Nikita",1,"google.com", "description")
-    for tr in database.get_all_payments():
-        print(tr)
+    database.print_all_payments()
 
     check_payments(database, ya_kassa)
 
-    for tr in database.get_all_payments():
-        print(tr)
+    database.print_all_payments()
