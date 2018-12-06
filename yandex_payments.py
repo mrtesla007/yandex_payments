@@ -15,64 +15,76 @@ Base = declarative_base()
 
 # STATUS: pending, waiting_for_capture, succeeded, canceled, timeout
 
-def check_payments(db, kassa):
-    pending_check(db,kassa)
-    waiting_capture_check(db,kassa)
-    
 
-def pending_check(db, kassa):
-    for payment in db.get_payments(status="pending"):
-        # If status was changed by ya_kasssa
-        payment_id = str(payment.payment_id)
-        status = kassa.get_status(payment_id)
-        if (status != payment.status):
-            payment.status = status
-            db.flush()
-        # If user doesn't pay in TIME_LIMIT
-        sec_ago = time.time() - payment.time
-        if sec_ago > config.TIME_LIMIT:
-            payment.status = "timeout"
-            db.flush()
+class PaymentProcessor:
+    def __init__(self, db, kassa):
+        self.db = db
+        self.kassa = kassa
 
-def waiting_capture_check(db, kassa):
-    for payment in db.get_payments(status="waiting_for_capture"):
-        payment_id = str(payment.payment_id)
-        status = kassa.get_status(payment_id)
-        if status == "waiting_for_capture":
-            kassa.confirm(payment_id)
+    def add_payment(self, user_id, pay_amount, return_url, description):
+        ya_payment = self.kassa.send_payment(pay_amount, return_url, description)
+        confim_url = ya_payment.confirmation.confirmation_url
+
+        db_payment = MyPayment(
+            user_id,
+            pay_amount,
+            return_url,
+            description,
+            str(ya_payment.id),
+            str(ya_payment.status))
+        self.db.add(db_payment)
+        self.db.flush()
+        return confim_url
+
+
+    def check_payments(self):
+        self._pending_check()
+        self._waiting_capture_check()
+        self.db.flush()
+        
+    def _pending_check(self):
+        for payment in self.db.get_payments(status="pending"):
+            # If status was changed by ya_kasssa
+            payment_id = str(payment.payment_id)
+            status = self.kassa.get_status(payment_id)
+            if status != payment.status:
+                payment.status = status
+                
+            # If user doesn't pay in TIME_LIMIT
+            sec_ago = time.time() - payment.time
+            if sec_ago > config.TIME_LIMIT:
+                payment.status = "timeout"
+
+
+    def _waiting_capture_check(self):
+        payments = self.db.get_payments(status="waiting_for_capture")
+        kassa = self.kassa
+        for payment in payments:
+            payment_id = str(payment.payment_id)
             status = kassa.get_status(payment_id)
+            if status == "waiting_for_capture":
+                kassa.confirm(payment_id)
+                status = kassa.get_status(payment_id)
+                
+            if status != payment.status:
+                payment.status = status
             
-        if (status != payment.status):
-            payment.status = status
-            db.flush()
-            
-# If user all the same decided to pay after TIME_LIMIT. 
-# Need to check with lower rate, so wasn't included to check_payments(db, kassa)
-def timeout_check(db, kassa):
-    for payment in db.get_payments(status="timeout"):
-        payment_id = str(payment.payment_id)
-        status = kassa.get_status(payment_id)
-        if (status == 'canceled'):
-            payment.status = status
-            db.flush()
-        if (status == 'waiting_for_capture'):
-            kassa.confirm(payment_id)
+    # If user all the same decided to pay after TIME_LIMIT. 
+    # Need to check with lower rate, so wasn't included to check_payments(db, kassa)
+    def timeout_check(self):
+        db, kassa = self.db, self.kassa
+        for payment in db.get_payments(status="timeout"):
+            payment_id = str(payment.payment_id)
             status = kassa.get_status(payment_id)
-            payment.status = status
-            db.flush()
+            if status == 'canceled':
+                payment.status = status
+                
+            if status == 'waiting_for_capture':
+                kassa.confirm(payment_id)
+                status = kassa.get_status(payment_id)
+                payment.status = status
+        db.flush()
             
-def add_payment(db, kassa, user_id, pay_amount, return_url, description):
-    payment = kassa.send_payment(pay_amount, return_url, description)
-    tr = MyPayment(
-        user_id,
-        pay_amount,
-        return_url,
-        description,
-        str(payment.id),
-        str(payment.status))
-    db.add(tr)
-    db.flush()
-    return payment.confirmation.confirmation_url
 
 class DB:
     def __init__(self, filename):
@@ -201,14 +213,21 @@ class Kassa(object):
 if __name__ == "__main__":
     database = DB("./database/test.sqlite")
     ya_kassa = Kassa(config.SHOP_ID, config.SECRET_KEY)
-    url = add_payment(database, ya_kassa, "Alex", 1, "google.com", "description")
+
+    processor = PaymentProcessor(database, ya_kassa)
+
+    url = processor.add_payment("Alex", 1, "google.com", "description")
     print(url)
-    # add_payment(db,"Sasha",1,"google.com", "description")
-    # add_payment(db,"Masha",1,"google.com", "description")
-    # add_payment(db,"Kolya",1,"google.com", "description")
-    # add_payment(db,"Nikita",1,"google.com", "description")
+
+    print("Before:\n")
     database.print_all_payments()
 
-    check_payments(database, ya_kassa)
+    processor.check_payments()
 
+    print("\nAfter:\n")
+    database.print_all_payments()
+
+    processor.timeout_check()
+
+    print("\nAfter timeout_check:\n")
     database.print_all_payments()
