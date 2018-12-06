@@ -16,6 +16,132 @@ Base = declarative_base()
 # STATUS: pending, waiting_for_capture, succeeded, canceled, timeout
 
 
+class MyPayment(Base):
+    __tablename__ = "payments"
+    id = Column(Integer, primary_key=True)
+    payment_id = Column(String)
+    user_id = Column(String)
+    pay_amount = Column(Float)
+    status = Column(String)
+    time = Column(Float)
+
+    def __init__(
+            self,
+            user_id,
+            pay_amount,
+            return_url,
+            description,
+            payment_id,
+            payment_status):
+        self.user_id = user_id
+        self.pay_amount = pay_amount
+        self.time = time.time()
+        self.payment_id = payment_id
+        self.status = payment_status
+
+    def __repr__(self):
+        return "<MyPayment({}, {}, {}, {}, {})>".format(
+            self.payment_id, self.user_id, self.pay_amount, self.status, self.time)
+
+
+
+class DB:
+    def __init__(self, filename):
+        self.engine = create_engine(
+            "sqlite:///{}".format(filename),
+            echo=False)
+
+        Session = sessionmaker(bind=self.engine)
+        self.session = Session()
+        self.conn = self.engine.connect()
+        Base.metadata.create_all(self.engine)
+
+    def add(self, obj):
+        self.session.add(obj)
+
+    def delete(self, obj):
+        self.session.delete(obj)
+
+    def change_status(self, payment, new_status):
+        if payment.status != new_status:
+            payment.status = new_status
+            self.flush()
+
+    def flush(self):
+        self.session.commit()
+        self.session.flush()
+
+    def get_all_payments(self):
+        return self.session.query(MyPayment).all()
+
+    def print_all_payments(self):
+        for payment in self.get_all_payments():
+            print(payment)
+
+    def get_payments(self, status):
+        query = self.session.query(MyPayment)
+        return query.filter(MyPayment.status == status).all()
+
+
+
+
+class Kassa(object):
+    def __init__(self, SHOP_ID, SECRET_KEY):
+        Configuration.configure(SHOP_ID, SECRET_KEY)
+
+    def send_payment(self, pay_amount, return_url, description):
+        idempotence_key = str(uuid.uuid4())
+        payment = Payment.create({
+            "amount": {
+                "value": pay_amount,
+                "currency": "RUB"
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": return_url
+            },
+            "description": description
+        }, idempotence_key)
+        return payment
+
+    def is_paid(self, payment):
+        return payment.status == "waiting_for_capture"
+
+    def confirm(self, payment_id):
+        payment = Payment.find_one(payment_id)
+        assert self.is_paid(payment)
+        idempotence_key = str(uuid.uuid4())
+        pay_amount = payment.amount.value
+        response = Payment.capture(
+            payment_id,
+            {
+                "amount": {
+                    "value": pay_amount,
+                    "currency": "RUB"
+                }
+            },
+            idempotence_key
+        )
+
+        return response.status == "succeeded"
+
+    def cancel(self, payment_id):
+        payment = Payment.find_one(payment_id)
+        assert self.is_paid(payment)
+        idempotence_key = str(uuid.uuid4())
+        response = Payment.cancel(
+            payment_id,
+            idempotence_key
+        )
+        return response.status == "canceled"
+
+    def get_status(self, payment_id):
+        payment = Payment.find_one(payment_id)
+        return payment.status
+
+
+
+
 class PaymentProcessor:
     def __init__(self, db, kassa):
         self.db = db
@@ -85,129 +211,6 @@ class PaymentProcessor:
                 payment.status = status
         db.flush()
             
-
-class DB:
-    def __init__(self, filename):
-        self.engine = create_engine(
-            "sqlite:///{}".format(filename),
-            echo=False)
-
-        Session = sessionmaker(bind=self.engine)
-        self.session = Session()
-        self.conn = self.engine.connect()
-        Base.metadata.create_all(self.engine)
-
-    def add(self, obj):
-        self.session.add(obj)
-
-    def delete(self, obj):
-        self.session.delete(obj)
-
-    def change_status(self, payment, new_status):
-        if payment.status != new_status:
-            payment.status = new_status
-            self.flush()
-
-    def flush(self):
-        self.session.commit()
-        self.session.flush()
-
-    def get_all_payments(self):
-        return self.session.query(MyPayment).all()
-
-    def print_all_payments(self):
-        for payment in self.get_all_payments():
-            print(payment)
-
-    def get_payments(self, status):
-        query = self.session.query(MyPayment)
-        return query.filter(MyPayment.status == status).all()
-
-
-
-class MyPayment(Base):
-    __tablename__ = "payments"
-    id = Column(Integer, primary_key=True)
-    payment_id = Column(String)
-    user_id = Column(String)
-    pay_amount = Column(Float)
-    status = Column(String)
-    time = Column(Float)
-
-    def __init__(
-            self,
-            user_id,
-            pay_amount,
-            return_url,
-            description,
-            payment_id,
-            payment_status):
-        self.user_id = user_id
-        self.pay_amount = pay_amount
-        self.time = time.time()
-        self.payment_id = payment_id
-        self.status = payment_status
-
-    def __repr__(self):
-        return "<MyPayment({}, {}, {}, {}, {})>".format(
-            self.payment_id, self.user_id, self.pay_amount, self.status, self.time)
-
-
-class Kassa(object):
-    def __init__(self, SHOP_ID, SECRET_KEY):
-        Configuration.configure(SHOP_ID, SECRET_KEY)
-
-    def send_payment(self, pay_amount, return_url, description):
-        idempotence_key = str(uuid.uuid4())
-        payment = Payment.create({
-            "amount": {
-                "value": pay_amount,
-                "currency": "RUB"
-            },
-            "confirmation": {
-                "type": "redirect",
-                "return_url": return_url
-            },
-            "description": description
-        }, idempotence_key)
-        return payment
-
-    def is_paid(self, payment):
-        return payment.status == "waiting_for_capture"
-
-    def confirm(self, payment_id):
-        payment = Payment.find_one(payment_id)
-        assert self.is_paid(payment)
-        idempotence_key = str(uuid.uuid4())
-        pay_amount = payment.amount.value
-        response = Payment.capture(
-            payment_id,
-            {
-                "amount": {
-                    "value": pay_amount,
-                    "currency": "RUB"
-                }
-            },
-            idempotence_key
-        )
-
-        return response.status == "succeeded"
-
-    def cancel(self, payment_id):
-        payment = Payment.find_one(payment_id)
-        assert self.is_paid(payment)
-        idempotence_key = str(uuid.uuid4())
-        response = Payment.cancel(
-            payment_id,
-            idempotence_key
-        )
-        return response.status == "canceled"
-
-    def get_status(self, payment_id):
-        payment = Payment.find_one(payment_id)
-        return payment.status
-
-
 
 
 if __name__ == "__main__":
